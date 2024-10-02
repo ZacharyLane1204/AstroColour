@@ -1,0 +1,11 @@
+Metadata-Version: 2.1
+Name: AstroColour
+Version: 1.0.0
+Summary: Create colour images of astronomical objects.
+Author: Zachary G. Lane
+Author-email: zacastronomy@gmail.com
+Requires-Dist: numpy
+Requires-Dist: matplotlib
+Requires-Dist: astropy
+Requires-Dist: scipy
+Requires-Dist: pandas

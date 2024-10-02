@@ -1,0 +1,7 @@
+setup.py
+AstroColour/AstroColour.py
+AstroColour.egg-info/PKG-INFO
+AstroColour.egg-info/SOURCES.txt
+AstroColour.egg-info/dependency_links.txt
+AstroColour.egg-info/requires.txt
+AstroColour.egg-info/top_level.txt
