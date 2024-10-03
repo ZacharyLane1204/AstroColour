@@ -9,7 +9,10 @@ from scipy.signal import fftconvolve, convolve2d
 
 # %matplotlib widget
 
-plt.rc('text', usetex=True)
+try:
+    plt.rc('text', usetex=True)
+except:
+    plt.rc('text', usetex=False)
 plt.rc('font', family='serif')
 
 fig_width_pt = 244.0  # Get this from LaTeX using \the\columnwidth
@@ -24,9 +27,12 @@ fig_size = [fig_width,fig_height] #(9,5.5) #(9, 4.5)
 fig_height_full = fig_width_full*golden_mean
 
 class RGB():
-    def __init__(self, image1, image2, image3, colour1 = 'red', colour2 = 'green', colour3 = 'blue', intensity1 = 1, intensity2 = 1, intensity3 = 1, 
-        upper1 = 98, lower1 = 2, upper2 = 98, lower2 = 2, upper3 = 98, lower3 = 2,
-        save = False, savename = '', figure_size = None, manual_override = False):
+    def __init__(self, image1, image2, image3, 
+                 colour1 = 'red', colour2 = 'green', colour3 = 'blue', 
+                 intensity1 = 1, intensity2 = 1, intensity3 = 1, 
+                 upper1 = 98, lower1 = 2, upper2 = 98, lower2 = 2, upper3 = 98, lower3 = 2,
+                 save = False, save_name = '', save_folder = '',
+                 figure_size = None, manual_override = None, dpi = 900):
         '''
         Create a RGB image from three images.
 
@@ -64,28 +70,40 @@ class RGB():
             Lowest percent data to cut out.
         save : Boolean
             Whether to save the image.
-        savename : String
+        save_name : String
             Detail to add in the saved filename.
+        save_folder : String
+            Folder to save the image.
         figure_size : Float
             Dimension of the image.
         manual_override : Boolean
             Whether to manually override the limits.
+        dpi : Integer
+            DPI of the saved image.
         '''
 
         self.intensity1 = intensity1
         self.intensity2 = intensity2
         self.intensity3 = intensity3
+
         self.upper1 = upper1
         self.lower1 = lower1
         self.upper2 = upper2
         self.lower2 = lower2
         self.upper3 = upper3
         self.lower3 = lower3
+
         self.save = save
-        self.savename = savename
+        self.save_name = save_name
+        self.save_folder = save_folder
+        self.dpi = dpi
+
         self.figure_size = figure_size
         if self.figure_size == None:
             self.figure_size = fig_width_full
+
+        if manual_override == None:
+            manual_override = 100
         self.manual_override = manual_override
 
         self.image1 = image1
@@ -111,7 +129,7 @@ class RGB():
 
         im_composite = np.clip(file_1 + file_2 + file_3, 0, 5)
 
-        self.final_plot(im_composite, self.figure_size, self.savename, self.save, self.manual_override)
+        self.final_plot(im_composite)
 
         return im_composite
 
@@ -194,7 +212,7 @@ class RGB():
         arr_rescaled = np.interp(x, (x_low, x_hi), (0, 1))
         return arr_rescaled
 
-    def final_plot(self, im_composite, figure_size, savename, save, manual_override):
+    def final_plot(self, im_composite):
         '''
         Plot the final image.
 
@@ -202,19 +220,16 @@ class RGB():
         ----------
         im_composite : 3d array
             2d arrays that are stacked in a third axis.
-        figure_size : Integer
-            Dimension of the image
-        savename : String
-            Detail to add in the saved filename.
-        save : Boolean
-            Whether to save the image.
-        manual_override : Boolean
-            Whether to manually override the limits.
         '''
 
         plt.figure(figsize = (self.figure_size,self.figure_size))
         plt.imshow(im_composite)
         plt.axis('off')
+        plt.xlim(self.manual_override , im_composite.shape[1] - self.manual_override )
+        plt.ylim(self.manual_override , im_composite.shape[0] - self.manual_override )
+        if self.save:
+            plt.savefig(os.path.join(self.save_folder, self.save_name + '.pdf'), format = 'pdf', bbox_inches = 'tight')
+            plt.savefig(os.path.join(self.save_folder, self.save_name + '.png'), dpi = self.dpi, bbox_inches = 'tight')
         plt.show()
 
     def register(self, T, R):
