@@ -1,5 +1,7 @@
+README.md
 setup.py
 AstroColour/AstroColour.py
+AstroColour/__init__.py
 AstroColour.egg-info/PKG-INFO
 AstroColour.egg-info/SOURCES.txt
 AstroColour.egg-info/dependency_links.txt
