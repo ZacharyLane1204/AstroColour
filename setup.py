@@ -7,4 +7,4 @@ setup(name = 'AstroColour',
       description = 'Create colour images of astronomical objects.', 
       packages = find_packages(), 
       scripts=['AstroColour/AstroColour.py'], 
-      install_requires = ['numpy', 'matplotlib', 'astropy', 'scipy', 'pandas'],)
+      install_requires = ['numpy', 'matplotlib', 'astropy', 'scipy', 'pandas'])
