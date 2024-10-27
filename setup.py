@@ -8,4 +8,4 @@ setup(name = 'AstroColour',
       packages = find_packages(), 
       scripts=['AstroColour/AstroColour.py'], 
       install_requires = ['numpy', 'matplotlib', 'astropy', 'scipy', 
-                          'pandas', 'sklearn', 'photutils'])
+                          'pandas', 'scikit-learn', 'photutils'])
