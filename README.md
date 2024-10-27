@@ -6,7 +6,7 @@
 git clone https://github.com/ZacharyLane1204/AstroColour.git
 ```
 In the Folder: e.g. 
-```cd AstroColour/ Run: pip install .```
+```cd AstroColour/``` Run: ```pip install .```
 If you are in a Windows environment you should use powershell.
 
 ## 
