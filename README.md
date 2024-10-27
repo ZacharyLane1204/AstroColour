@@ -2,16 +2,17 @@
 **Colour the Astro Images in bands/colours.**
 
 ## Install Instructions
-
+```
 git clone https://github.com/ZacharyLane1204/AstroColour.git
-
-In the Folder: e.g. cd AstroColour/ Run: pip install .
+```
+In the Folder: e.g. 
+```cd AstroColour/ Run: pip install .```
 If you are in a Windows environment you should use powershell.
 
 ## 
 
 in your script import the module. Here is an example:
-
+```
 from AstroColour.AstroColour import RGB
 
 rgb = RGB(
@@ -31,7 +32,9 @@ rgb = RGB(
     epsf=True
 )
 colour = rgb.plot()
+```
 
+```
 images : List
     List of Numpy Arrays of data images.
 colours : List
@@ -66,3 +69,4 @@ star_size : Float
   Size of the stars for the EPSF method.
 epsf_plot : Boolean
   Whether to plot the EPSF kernel.
+```
