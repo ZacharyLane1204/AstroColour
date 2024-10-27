@@ -3,3 +3,5 @@ matplotlib
 astropy
 scipy
 pandas
+scikit-learn
+photutils
