@@ -97,6 +97,16 @@ class RGB():
         epsf_plot : Boolean
             Whether to plot the EPSF kernel.
         '''
+        length = len(images)
+        
+        if len(colours) != length:
+            raise ValueError("Length of colours does not match the number of images.")
+        if len(intensities) != length:
+            raise ValueError("Length of intensities does not match the number of images.")
+        if len(uppers) != length:
+            raise ValueError("Length of uppers does not match the number of images.")
+        if len(lowers) != length:
+            raise ValueError("Length of lowers does not match the number of images.")
 
         self.save = save
         self.save_name = save_name
@@ -389,6 +399,8 @@ class RGB():
             plt.savefig(os.path.join(self.save_folder, self.save_name + '.pdf'), format = 'pdf', bbox_inches = 'tight')
             plt.savefig(os.path.join(self.save_folder, self.save_name + '.png'), dpi = self.dpi, bbox_inches = 'tight')
         plt.show()
+        
+        return im_composite
 
     def register(self, T, R):
         """
