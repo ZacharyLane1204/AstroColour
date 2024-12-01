@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(name = 'AstroColour',
-      version = '1.1.0',
+      version = '1.1.2',
       author = 'Zachary G. Lane', 
       author_email = 'zacastronomy@gmail.com', 
       description = 'Create colour images of astronomical objects.', 
