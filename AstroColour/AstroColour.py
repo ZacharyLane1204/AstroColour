@@ -9,9 +9,9 @@ from astropy.stats import sigma_clipped_stats, SigmaClip
 from astropy.wcs import WCS
 from astropy.nddata import NDData
 from astropy.table import Table
+from astropy.convolution import convolve
 
 from scipy.signal import fftconvolve, convolve2d
-from scipy.ndimage import gaussian_filter
 
 from photutils.detection import find_peaks
 from photutils.psf import extract_stars
@@ -25,16 +25,11 @@ from sklearn.cluster import DBSCAN
 
 import os
 from copy import deepcopy
+from tqdm import tqdm
 import warnings
 
 warnings.filterwarnings('ignore')
 
-# %matplotlib widget
-
-try:
-    plt.rc('text', usetex=True)
-except:
-    plt.rc('text', usetex=False)
 plt.rc('font', family='serif')
 
 fig_width_pt = 244.0  # Get this from LaTeX using \the\columnwidth
@@ -56,7 +51,7 @@ class RGB():
                  save = False, save_name = '', save_folder = '',
                  figure_size = None, manual_override = None, dpi = 900, 
                  norm = 'linear', gamma = 1, epsf = True, min_separation = 34, 
-                 star_size = 15, epsf_plot = False):
+                 star_size = 15, epsf_plot = False, cross_corr = True):
         '''
         Create a RGB image from three images.
 
@@ -96,6 +91,8 @@ class RGB():
             Size of the stars for the EPSF method.
         epsf_plot : Boolean
             Whether to plot the EPSF kernel.
+        cross_corr : Boolean
+            Whether to cross correlate the images.
         '''
         length = len(images)
         
@@ -116,6 +113,7 @@ class RGB():
         self.epsf = epsf
         self.star_size = star_size
         self.epsf_plot = epsf_plot
+        self.cross_corr = cross_corr
 
         self.figure_size = figure_size
         if self.figure_size == None:
@@ -152,8 +150,6 @@ class RGB():
             List of Floats between 0 and 100 for lower percentile
         """
         
-        i = 0
-        
         calib_images = []
         calib_colours = []
         calib_intensities = []
@@ -163,36 +159,45 @@ class RGB():
         
         try:
             if self.epsf:
-                epsf_kernels = [self.create_epsf_kernel(image) for image in images]  # Create EPSF kernels for each image
-                fwhms = [self.calculate_fwhm(kernel) for kernel in epsf_kernels]  # Calculate FWHM for each EPSF
+                epsf_kernels = []
+                over_sampled_epsf = []
+                
+                for image in images:
+                    epsf_kernel, over_sampled = self.create_epsf_kernel(image)
+                    epsf_kernels.append(epsf_kernel)
+                    over_sampled_epsf.append(over_sampled)
+                fwhms = [self.calculate_fwhm(kernel) for kernel in over_sampled_epsf]  # Calculate FWHM for each EPSF
                 largest_fwhm_kernel = epsf_kernels[np.nanargmax(fwhms)]  # Identify the EPSF with the largest FWHM
+                
+                idx = np.nanargmax(fwhms)
                 self.epsf = True
         except:
             self.epsf = False
             print('EPSF failed to create. Skipping...')
-        
-        for image, colour, intensity, upper, lower in zip(images, colours, intensities, uppers, lowers):
-            if i ==0:
-                if self.epsf:
-                    image = convolve2d(image, largest_fwhm_kernel, mode='same')
-                calib_images.append(image)
-            else: 
-                image = self.register(image, calib_images[0])
-                if self.epsf:
-                    image = convolve2d(image, largest_fwhm_kernel, mode='same')
+            
+        for i in tqdm(range(len(images)), desc = 'Processing Images'):
+            
+            if i == 0:
+                if self.epsf & (idx != 0):
+                    image = self.match_psf(images[i], largest_fwhm_kernel)
+                else:
+                    image = images[i]
                 calib_images.append(image)
                 
-            p_norm = self.percent_norm(image, lower = lower, upper = upper)
-            colour = self.colour_check(colour)
+            else:
+                image = self.subsequent_images(images[i], largest_fwhm_kernel, calib_images[0])
+                calib_images.append(image)
+            
+            p_norm = self.percent_norm(image, lower = lowers[i], upper = uppers[i])
+            colour = self.colour_check(colours[i])
             calib_colours.append(colour)
             
-            files.append(self.colourise(p_norm, colour, intensity))
+            files.append(self.colourise(p_norm, colour, intensities[i]))
             
-            calib_intensities.append(intensity)
-            calib_uppers.append(upper)
-            calib_lowers.append(lower)
+            calib_intensities.append(intensities[i])
+            calib_uppers.append(uppers[i])
+            calib_lowers.append(lowers[i])
             
-            i += 1
         self.images = calib_images
         self.colours = calib_colours
         self.intensities = calib_intensities
@@ -200,10 +205,65 @@ class RGB():
         self.lowers = calib_lowers
         self.files = files
         
-        im_composite = np.clip(np.nansum(files, axis = 0), 0, 10)
-        
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            im_composite = np.clip(np.nansum(files, axis=0), 0, 10)
+    
         self.im_composite = im_composite
         
+    def subsequent_images(self, image, largest_fwhm_kernel, match_image):
+        """
+        Process subsequent images.
+        
+        Parameters
+        ----------
+        image : 2d array
+            Image to be processed.
+        epsf_kernel : 2d array
+            EPSF kernel.
+        largest_fwhm_kernel : 2d array
+            EPSF kernel with the largest FWHM.
+        match_image : 2d array
+            Image to match the PSF to.
+            
+        Returns
+        -------
+        new_image : 2d array
+            Processed image.
+        """
+        if self.cross_corr:
+            new_image = self.register(image, match_image)
+            if new_image is None:
+                    new_image = image
+        else:
+            new_image = image
+                
+        if self.epsf:
+            new_image = self.match_psf(new_image, largest_fwhm_kernel)
+            
+        return new_image
+
+    def match_psf(self, image, psf):
+        """
+        Match the PSF of two images.
+        
+        Parameters
+        ----------
+        image : 2d array
+            Image to be processed.
+        psf : 2d array
+            PSF kernel of the largest image.
+            
+        Returns
+        -------
+        corrected_image : 2d array
+            Image with matched PSF.
+        """
+
+        corrected_image = convolve(image, psf)
+        
+        return corrected_image
+
     def _star_extraction(self, data):
         '''
         Extract stars from the image.
@@ -260,16 +320,20 @@ class RGB():
         '''
         
         stars = self._star_extraction(data)
-        epsf_builder = EPSFBuilder(oversampling=1, maxiters = 10, progress_bar=False, 
+        epsf_builder = EPSFBuilder(oversampling=1, maxiters = 20, progress_bar=False, 
                                    recentering_maxiters = 10, smoothing_kernel='quartic')
         epsf, _ = epsf_builder(stars)
+        
+        epsf_builder_4 = EPSFBuilder(oversampling=4, maxiters = 20, progress_bar=False, 
+                                     recentering_maxiters = 10, smoothing_kernel='quartic')
+        epsf_4, _ = epsf_builder_4(stars)
         
         if self.epsf_plot:
             plt.figure()
             plt.imshow(epsf.data)
             plt.show()
         
-        return epsf.data
+        return epsf.data, epsf_4.data
     
     def calculate_fwhm(self, kernel):
         '''
@@ -286,13 +350,16 @@ class RGB():
             FWHM of the EPSF kernel.
         '''
         
-        half_max = np.nanmax(kernel) / 2.0
-        indices = np.where(kernel >= half_max)
+        half_max = np.nanmax(kernel) / 2
+        # indices = np.where(kernel >= half_max)
+        contour = kernel > half_max
         
-        fwhm_x = np.nanmax(indices[1]) - np.nanmin(indices[1]) + 1
-        fwhm_y = np.nanmax(indices[0]) - np.nanmin(indices[0]) + 1
+        y, x = np.where(contour)
         
-        return (fwhm_x + fwhm_y)/2
+        fwhm_x = np.ptp(x)
+        fwhm_y = np.ptp(y)
+        
+        return max(fwhm_x, fwhm_y)
 
     def colourise(self, im, colour, intensity):
         '''
@@ -409,7 +476,7 @@ class RGB():
         Parameters
         ----------
         T : 2d array
-            Image to be registered.
+            Image to be transformed.
         R : 2d array
             Reference image.
         Returns
