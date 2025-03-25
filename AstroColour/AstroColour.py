@@ -178,14 +178,18 @@ class RGB():
         for i in tqdm(range(len(images)), desc = 'Processing Images'):
             
             if i == 0:
-                if self.epsf & (idx != 0):
-                    image = self.match_psf(images[i], largest_fwhm_kernel)
+                if self.epsf: 
+                    if (idx != 0):
+                        image = self.match_psf(images[i], largest_fwhm_kernel)
                 else:
                     image = images[i]
                 calib_images.append(image)
                 
             else:
-                image = self.subsequent_images(images[i], largest_fwhm_kernel, calib_images[0])
+                if self.epsf:
+                    image = self.subsequent_images(images[i], largest_fwhm_kernel, calib_images[0])
+                else:
+                    image=images[i]
                 calib_images.append(image)
             
             p_norm = self.percent_norm(image, lower = lowers[i], upper = uppers[i])
