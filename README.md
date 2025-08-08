@@ -26,8 +26,6 @@ rgb = RGB(
     save_folder='/Users/zgl12/',
     gamma=1.5,
     norm='asinh',
-    min_separation=29,
-    star_size=5,
     epsf_plot=False,
     epsf=True
 )
@@ -63,10 +61,18 @@ gamma : Float
   Gamma correction of the image. Power to raise the image to.
 epsf : Boolean
   Whether to use the EPSF method.
-min_separation : Float
-  Minimum separation between stars.
-star_size : Float
-  Size of the stars for the EPSF method.
 epsf_plot : Boolean
   Whether to plot the EPSF kernel.
+run : Boolean
+  Whether to process images or just use the framework
 ```
+
+Versions:
+- numpy == 1.26.4
+- matplotlib == matplotlib
+- astropy == 7.1.0
+- pandas == 2.2.3
+- photutils == 1.13.0
+- scikit-learn == 1.5.1
+- opencv-python == 4.9.0.80
+- astroscrappy == 1.2.0
