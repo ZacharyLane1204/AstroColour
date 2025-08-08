@@ -123,16 +123,25 @@ class RGB():
             manual_override = 100
         self.manual_override = manual_override
         
-        if ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norm):
-            self.norm = norm
-        else:
-            raise ValueError("Not a valid norm. Try 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.")
+        if isinstance(norm, str):
+            if ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norm):
+                norms = [norm]*len(images)
+            else:
+                raise ValueError("Not a valid norm. Try 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.")
+            
+        elif isinstance(norm, list) & (len(norm) == length):
+            norms = []
+            for i in range(len(norm)):
+                if not ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norm[i]):
+                    raise ValueError("Not a valid norm. Try 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.")
+                else:
+                    norms.append(norm[i])
         
         self.gamma = gamma
         
-        self.process_images(images, colours, intensities, uppers, lowers)
+        self.process_images(images, colours, intensities, uppers, lowers, norms)
 
-    def process_images(self, images, colours, intensities, uppers, lowers):
+    def process_images(self, images, colours, intensities, uppers, lowers, norms):
         """
         Process the images.
         
@@ -171,8 +180,12 @@ class RGB():
                 
                 idx = np.nanargmax(fwhms)
                 self.epsf = True
+            else:
+                self.epsf = False
+                idx = 0
         except:
             self.epsf = False
+            idx = 0
             print('EPSF failed to create. Skipping...')
             
         for i in tqdm(range(len(images)), desc = 'Processing Images'):
@@ -186,13 +199,10 @@ class RGB():
                 calib_images.append(image)
                 
             else:
-                if self.epsf:
-                    image = self.subsequent_images(images[i], largest_fwhm_kernel, calib_images[0])
-                else:
-                    image=images[i]
+                image = self.subsequent_images(images[i], largest_fwhm_kernel, calib_images[0])
                 calib_images.append(image)
             
-            p_norm = self.percent_norm(image, lower = lowers[i], upper = uppers[i])
+            p_norm = self.percent_norm(image, lower = lowers[i], upper = uppers[i], norm = norms[i])
             colour = self.colour_check(colours[i])
             calib_colours.append(colour)
             
@@ -418,7 +428,7 @@ class RGB():
             raise ValueError("Not a valid input. Try a named colour in matplotlib or a tuple in the form (255,255,255).")
         return colour
 
-    def percent_norm(self, x, lower = 2, upper = 98):
+    def percent_norm(self, x, lower = 2, upper = 98, norm = 'linear'):
         '''
         Rescale the image to a percentage scale.
 
@@ -443,8 +453,8 @@ class RGB():
         # Scale the array so that its minimum and maximum values correspond to the 2nd and 98th percentile values, respectively
         # arr_rescaled = np.interp(x, (x_low, x_hi), (0, 1))
         
-        norm = simple_norm(x, stretch=self.norm, min_percent=lower, max_percent=upper)
-        arr_rescaled = norm(x)
+        normed = simple_norm(x, stretch=norm, min_percent=lower, max_percent=upper)
+        arr_rescaled = normed(x)
         
         arr_rescaled = np.power(arr_rescaled, self.gamma)
         

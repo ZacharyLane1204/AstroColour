@@ -11,7 +11,13 @@ from astropy.nddata import NDData
 from astropy.table import Table
 from astropy.convolution import convolve
 
+from astroscrappy import detect_cosmics
+
 from scipy.signal import fftconvolve, convolve2d
+from scipy.ndimage import label
+from scipy.ndimage import binary_dilation
+from scipy.spatial import cKDTree
+from scipy.stats import gaussian_kde
 
 from photutils.detection import find_peaks
 from photutils.psf import extract_stars
@@ -22,10 +28,19 @@ from photutils.background import LocalBackground, MMMBackground
 from photutils.psf import SourceGrouper
 
 from sklearn.cluster import DBSCAN
+from skimage.transform import estimate_transform, warp
+from skimage import filters, morphology, measure
+from skimage import feature, transform, draw
+
+from AstroColour.image_rotation import unrotate_image
+from AstroColour.psf_analysis import PSF_Analysis, Simple_ePSF
+from AstroColour.pdastro import pdastrostatsclass
+from AstroColour.hidden_prints import hidden_prints
 
 import os
 from copy import deepcopy
 from tqdm import tqdm
+import cv2
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -50,8 +65,8 @@ class RGB():
                  uppers = [98, 98, 98], lowers = [2, 2, 2],
                  save = False, save_name = '', save_folder = '',
                  figure_size = None, manual_override = None, dpi = 900, 
-                 norm = 'linear', gamma = 1, epsf = True, min_separation = 34, 
-                 star_size = 15, epsf_plot = False, cross_corr = True):
+                 norm = 'linear', gamma = 1, epsf = True, 
+                 epsf_plot = False, bkg_plot = False, temp_save = True, run = True):
         '''
         Create a RGB image from three images.
 
@@ -85,14 +100,10 @@ class RGB():
             Gamma correction of the image. Power to raise the image to.
         epsf : Boolean
             Whether to use the EPSF method.
-        min_separation : Float
-            Minimum separation between stars.
-        star_size : Float
-            Size of the stars for the EPSF method.
         epsf_plot : Boolean
             Whether to plot the EPSF kernel.
-        cross_corr : Boolean
-            Whether to cross correlate the images.
+        run : Boolean
+            Whether to process images or just use the framework
         '''
         length = len(images)
         
@@ -109,11 +120,10 @@ class RGB():
         self.save_name = save_name
         self.save_folder = save_folder
         self.dpi = dpi
-        self.min_separation = min_separation
         self.epsf = epsf
-        self.star_size = star_size
         self.epsf_plot = epsf_plot
-        self.cross_corr = cross_corr
+        self.bkg_plot = bkg_plot
+        self.temp_save = temp_save
 
         self.figure_size = figure_size
         if self.figure_size == None:
@@ -123,16 +133,48 @@ class RGB():
             manual_override = 100
         self.manual_override = manual_override
         
-        if ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norm):
-            self.norm = norm
-        else:
-            raise ValueError("Not a valid norm. Try 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.")
+        if isinstance(norm, str):
+            if ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norm):
+                norms = [norm]*len(images)
+            else:
+                raise ValueError("Not a valid norm. Try 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.")
+            
+        elif isinstance(norm, list) & (len(norm) == length):
+            norms = []
+            for i in range(len(norm)):
+                if not ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norm[i]):
+                    raise ValueError("Not a valid norm. Try 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.")
+                else:
+                    norms.append(norm[i])
         
         self.gamma = gamma
         
-        self.process_images(images, colours, intensities, uppers, lowers)
+        if run:
+            images = self._preprocess_images(images)
+            self.process_images(images, colours, intensities, uppers, lowers, norms)
+        
+    def _preprocess_images(self, images):
+        
+        new_images = []
+        for image in images:
+            
+            bleed_image = self.bleeding_trails(image)
+            
+            # sat_image = self.satellite_trails(image)
+            
+            new_image, _ = unrotate_image(bleed_image)
+            
+            # plt.figure()
+            # plt.imshow(sat_image - image, origin='lower', 
+            #            vmin = np.nanpercentile(sat_image - image, 1), 
+            #            vmax = np.nanpercentile(sat_image - image, 99), cmap= 'gray')
+            # plt.show()         
+            
+            new_images.append(new_image)
+        
+        return new_images
 
-    def process_images(self, images, colours, intensities, uppers, lowers):
+    def process_images(self, images, colours, intensities, uppers, lowers, norms):
         """
         Process the images.
         
@@ -151,220 +193,145 @@ class RGB():
         """
         
         calib_images = []
-        calib_colours = []
-        calib_intensities = []
-        calib_uppers = []
-        calib_lowers = []
         files = []
         
-        try:
-            if self.epsf:
-                epsf_kernels = []
-                over_sampled_epsf = []
-                
-                for image in images:
-                    epsf_kernel, over_sampled = self.create_epsf_kernel(image)
-                    epsf_kernels.append(epsf_kernel)
-                    over_sampled_epsf.append(over_sampled)
-                fwhms = [self.calculate_fwhm(kernel) for kernel in over_sampled_epsf]  # Calculate FWHM for each EPSF
-                largest_fwhm_kernel = epsf_kernels[np.nanargmax(fwhms)]  # Identify the EPSF with the largest FWHM
-                
-                idx = np.nanargmax(fwhms)
-                self.epsf = True
-        except:
-            self.epsf = False
-            print('EPSF failed to create. Skipping...')
-            
-        for i in tqdm(range(len(images)), desc = 'Processing Images'):
-            
-            if i == 0:
-                if self.epsf: 
-                    if (idx != 0):
-                        image = self.match_psf(images[i], largest_fwhm_kernel)
-                else:
-                    image = images[i]
-                calib_images.append(image)
-                
-            else:
-                if self.epsf:
-                    image = self.subsequent_images(images[i], largest_fwhm_kernel, calib_images[0])
-                else:
-                    image=images[i]
-                calib_images.append(image)
-            
-            p_norm = self.percent_norm(image, lower = lowers[i], upper = uppers[i])
-            colour = self.colour_check(colours[i])
-            calib_colours.append(colour)
-            
-            files.append(self.colourise(p_norm, colour, intensities[i]))
-            
-            calib_intensities.append(intensities[i])
-            calib_uppers.append(uppers[i])
-            calib_lowers.append(lowers[i])
-            
-        self.images = calib_images
-        self.colours = calib_colours
-        self.intensities = calib_intensities
-        self.uppers = calib_uppers
-        self.lowers = calib_lowers
-        self.files = files
-        
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            im_composite = np.clip(np.nansum(files, axis=0), 0, 10)
-    
-        self.im_composite = im_composite
-        
-    def subsequent_images(self, image, largest_fwhm_kernel, match_image):
-        """
-        Process subsequent images.
-        
-        Parameters
-        ----------
-        image : 2d array
-            Image to be processed.
-        epsf_kernel : 2d array
-            EPSF kernel.
-        largest_fwhm_kernel : 2d array
-            EPSF kernel with the largest FWHM.
-        match_image : 2d array
-            Image to match the PSF to.
-            
-        Returns
-        -------
-        new_image : 2d array
-            Processed image.
-        """
-        if self.cross_corr:
-            new_image = self.register(image, match_image)
-            if new_image is None:
-                    new_image = image
-        else:
-            new_image = image
-                
+        # try:
         if self.epsf:
-            new_image = self.match_psf(new_image, largest_fwhm_kernel)
+            fwhms = []
+            epsfs = []
+            positions = []
+            for image in images:
+                
+                psf_analysis = PSF_Analysis(image, epsf_plot=self.epsf_plot)
+                
+                fwhms.append(psf_analysis.fwhm_estimate)
+                epsfs.append(psf_analysis.epsf_data)
+                positions.append(psf_analysis.positions)
+                
+            idx = np.nanargmax(fwhms)
+            # largest_fwhm_kernel = epsfs[idx]  # Identify the EPSF with the largest FWHM
             
-        return new_image
-
-    def match_psf(self, image, psf):
-        """
-        Match the PSF of two images.
-        
-        Parameters
-        ----------
-        image : 2d array
-            Image to be processed.
-        psf : 2d array
-            PSF kernel of the largest image.
+            self.epsf = True
+        else:
+            self.epsf = False
+            idx = 0
+            positions = []
+            for image in images:
+                psf_analysis = Simple_ePSF(image)
+                positions.append(psf_analysis.positions)
             
-        Returns
-        -------
-        corrected_image : 2d array
-            Image with matched PSF.
-        """
-
-        corrected_image = convolve(image, psf)
+        # fwhms = []
+        # epsfs = []
+        # positions = []
         
-        return corrected_image
+        # for image in images:
+            
+        #     psf_analysis = Simple_ePSF(image, simple_psf = True)
+        #     fwhms.append(psf_analysis.fwhm)
+        #     epsfs.append(psf_analysis.psf_kernel)
+        #     positions.append(psf_analysis.positions)
+        # idx = np.nanargmax(fwhms)
 
-    def _star_extraction(self, data):
-        '''
-        Extract stars from the image.
+        # print('ZZZ fwhms:', fwhms)
         
-        Parameters
-        ----------
-        data : 2d array
-            FITS Image.
-        '''
         
-        nddata = NDData(data=data) 
-        mean, median, std = sigma_clipped_stats(data, sigma=3.0) 
-
-        fwhm = 5
-
-        daofind = DAOStarFinder(fwhm=fwhm, threshold=10.*std)  
-        sources = daofind(data) 
-
-        sources.sort('flux', reverse=True)
-
-        positions = np.zeros((len(sources), 2))
-        positions[:,0] = sources['xcentroid'].value
-        positions[:,1] = sources['ycentroid'].value
-
-        db = DBSCAN(eps=self.min_separation, min_samples=2).fit(positions) # Apply DBSCAN clustering
-
-        labels = db.labels_ # Get the labels assigned by DBSCAN (-1 means noise)
-
-        filtered_positions_temp = positions[labels == -1] # Filter out the points that are considered noise
-
-        condition = np.logical_and(np.logical_and(filtered_positions_temp[:, 0] >= self.min_separation, 
-                                                filtered_positions_temp[:, 0] <= (data.shape[0] - self.min_separation)), 
-                                    np.logical_and(filtered_positions_temp[:, 1] >= self.min_separation, 
-                                                filtered_positions_temp[:, 1] <= (data.shape[1] - self.min_separation)))
-
-        filtered_positions = filtered_positions_temp[condition]
-
-        stars_tbl = Table()
-        stars_tbl['x'] = filtered_positions[:,0]
-        stars_tbl['y'] = filtered_positions[:,1]
-
-        stars = extract_stars(nddata, stars_tbl, size=self.star_size)
-
-        return stars
-
-    def create_epsf_kernel(self, data):
-        '''
-        Create an EPSF kernel based on Anderson and King (2000).
-
-        Returns
-        -------
-        epsf_kernel : 2d array
-            EPSF kernel.
-        '''
+        with hidden_prints():
+            for i, image in enumerate(images):
+                if i != idx:
+                    bkg_image = self.backgrounding(image, plot=self.bkg_plot)
+                    crmask, cleaned_image = self.cosmic_ray_removal(bkg_image)
+                    
+                    aligned_image = self.positioning_aligning(positions[idx], positions[i], cleaned_image)
+                    if self.epsf:
+                        corrected_image = self.match_psf(aligned_image, epsfs[i])
+                    else:
+                        corrected_image = aligned_image.copy()
+                    calib_images.append(corrected_image)
+                else:
+                    bkg_image = self.backgrounding(image, plot=self.bkg_plot)
+                    crmask, cleaned_image = self.cosmic_ray_removal(bkg_image)
+                    calib_images.append(cleaned_image)
+                
+                coloured_image = self.running_norm_colour(cleaned_image, 
+                                                          lower = lowers[i], upper = uppers[i], 
+                                                          norm = norms[i], colour_choice = colours[i], 
+                                                          gamma = self.gamma, intensity = intensities[i])
+                
+                files.append(coloured_image)
+                
+                
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                im_composite = np.clip(np.nansum(files, axis=0), 0, 5)
         
-        stars = self._star_extraction(data)
-        epsf_builder = EPSFBuilder(oversampling=1, maxiters = 20, progress_bar=False, 
-                                   recentering_maxiters = 10, smoothing_kernel='quartic')
-        epsf, _ = epsf_builder(stars)
+            self.im_composite = im_composite
+            self.calib_images = calib_images
+
+            if self.temp_save:
+                np.save('image_composite.npy', im_composite)
+                np.save('calib_images.npy', calib_images)
+
+
+    def running_norm_colour(self, image, lower = 2, upper = 98, 
+                            norm = 'linear', colour_choice = 'red', 
+                            gamma = 1, intensity = 1):
+                
+        p_norm = self.percent_norm(image, lower = lower, upper = upper, norm = norm, gamma = gamma)
+        colour = self.colour_check(colour_choice)
+                
+        coloured_image = self.colourise(p_norm, colour, intensity)
         
-        epsf_builder_4 = EPSFBuilder(oversampling=4, maxiters = 20, progress_bar=False, 
-                                     recentering_maxiters = 10, smoothing_kernel='quartic')
-        epsf_4, _ = epsf_builder_4(stars)
+        return coloured_image
         
-        if self.epsf_plot:
-            plt.figure()
-            plt.imshow(epsf.data)
-            plt.show()
+    def cosmic_ray_removal(self,  image_data):
+        crmask, cleaned = detect_cosmics(image_data, 
+                                  sigclip=4.5,       # sigma threshold for detection
+                                  sigfrac=0.3,        # neighboring pixels fraction
+                                  objlim=5.0,         # contrast between CR and object
+                                  gain=1.0,           # if not gain-corrected, set appropriately
+                                  readnoise=5.0,      # your camera's read noise (in e-)
+                                  satlevel=65535.0,   # saturation limit (to avoid false positives)
+                                  niter=4,            # number of iterations
+                                  cleantype='medmask' # how to interpolate over CRs
+                                  )
         
-        return epsf.data, epsf_4.data
+        return crmask, cleaned
+        
+    def backgrounding(self, data, plot = None):
+        
+        pdac = pdastrostatsclass()
+        
+        cut_data = data.copy()
+        
+        thresh_hi = np.nanpercentile(cut_data, 70)
+        thresh_low = np.nanpercentile(cut_data, 5)
+        
+        cut_data = cut_data[(cut_data < thresh_hi)]
+        cut_data = cut_data[(cut_data > thresh_low)]
+        
+        
+        cut_data_med = np.nanpercentile(cut_data, 40)
+        
+        df = pd.DataFrame()
+        
+        pdac.t = df
+        pdac.t['dm']=  cut_data - cut_data_med
+        
+        pdac.calcaverage_sigmacutloop('dm', verbose=0, percentile_cut_firstiteration=50)
+        
+        bkg = pdac.statparams['mean'] + cut_data_med
+        
+        return data - bkg
     
-    def calculate_fwhm(self, kernel):
-        '''
-        Calculate the Full Width at Half Maximum (FWHM) of an EPSF kernel in two dimensions.
+    def _data_slicing(self, background):
+        
+        prep_data = background.ravel().copy()
+        prep_data = prep_data[np.isfinite(prep_data)]
 
-        Parameters
-        ----------
-        kernel : 2d array
-            EPSF kernel.
-
-        Returns
-        -------
-        fwhm : float
-            FWHM of the EPSF kernel.
-        '''
+        prep_data = prep_data[(prep_data > np.nanpercentile(prep_data, 5)) & (prep_data < np.nanpercentile(prep_data, 95))]
         
-        half_max = np.nanmax(kernel) / 2
-        # indices = np.where(kernel >= half_max)
-        contour = kernel > half_max
+        return prep_data
         
-        y, x = np.where(contour)
-        
-        fwhm_x = np.ptp(x)
-        fwhm_y = np.ptp(y)
-        
-        return max(fwhm_x, fwhm_y)
-
     def colourise(self, im, colour, intensity):
         '''
         Colourise the image. and scale the intensity.
@@ -418,7 +385,7 @@ class RGB():
             raise ValueError("Not a valid input. Try a named colour in matplotlib or a tuple in the form (255,255,255).")
         return colour
 
-    def percent_norm(self, x, lower = 2, upper = 98):
+    def percent_norm(self, x, lower = 2, upper = 98, norm = 'linear', gamma = 1):
         '''
         Rescale the image to a percentage scale.
 
@@ -436,21 +403,15 @@ class RGB():
         arr_rescaled : 2d array
             Normalised percentage scaled 2d array.
         '''
-
-        # x_low = np.nanpercentile(x, lower)
-        # x_hi = np.nanpercentile(x, upper)
         
-        # Scale the array so that its minimum and maximum values correspond to the 2nd and 98th percentile values, respectively
-        # arr_rescaled = np.interp(x, (x_low, x_hi), (0, 1))
+        normed = simple_norm(x, stretch=norm, min_percent=lower, max_percent=upper)
+        arr_rescaled = normed(x)
         
-        norm = simple_norm(x, stretch=self.norm, min_percent=lower, max_percent=upper)
-        arr_rescaled = norm(x)
-        
-        arr_rescaled = np.power(arr_rescaled, self.gamma)
+        arr_rescaled = np.power(arr_rescaled, gamma)
         
         return arr_rescaled
 
-    def plot(self):
+    def plot(self, image = None):
         '''
         Plot the final image.
 
@@ -459,7 +420,16 @@ class RGB():
         im_composite : 3d array
             2d arrays that are stacked in a third axis.
         '''
-        im_composite = self.im_composite
+        
+        if image is not None:
+            im_composite = image.copy()
+        else:
+            try:
+                im_composite = np.load('image_composite.npy')
+            except:
+                im_composite = self.im_composite
+            finally:
+                raise ValueError('Either put in an array')
 
         plt.figure(figsize = (self.figure_size,self.figure_size))
         plt.imshow(im_composite)
@@ -473,43 +443,118 @@ class RGB():
         
         return im_composite
 
-    def register(self, T, R):
-        """
-        Register two images using cross-correlation.
+    def positioning_aligning(self, positions_ref, positions_target, target_image):
+        tree = cKDTree(positions_ref)
+        dist, idx = tree.query(positions_target, distance_upper_bound=3)  # max matching radius
+        matched_ref = positions_ref[idx[dist != np.inf]]
+        matched_target = positions_target[dist != np.inf]
+        
+        tform = estimate_transform('similarity', matched_target, matched_ref)
+        
+        aligned_image = warp(target_image, inverse_map=tform.inverse, order=3, preserve_range=True)
+        
+        return aligned_image
+        
+    def inpaint_masked_pixels(self, image, mask):
+        image_norm = (image - np.nanmin(image)) / (np.nanmax(image) - np.nanmin(image))
+        image_8bit = np.uint8(image_norm * 255)
+        mask_8bit = np.uint8(mask * 255)
 
+        inpainted = cv2.inpaint(image_8bit, mask_8bit, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
+        return inpainted.astype(float) / 255 * (np.nanmax(image) - np.nanmin(image)) + np.nanmin(image)
+    
+    def match_psf(self, image, psf):
+        """
+        Match the PSF of two images.
+        
         Parameters
         ----------
-        T : 2d array
-            Image to be transformed.
-        R : 2d array
-            Reference image.
+        image : 2d array
+            Image to be processed.
+        psf : 2d array
+            PSF kernel of the largest image.
+            
         Returns
         -------
-        R_new : 2d array
-        """ 
+        corrected_image : 2d array
+            Image with matched PSF.
+        """
 
-        Rcm = R - np.median(R)
-        Tcm = T - np.median(T)
-        c = fftconvolve(Rcm, Tcm[::-1, ::-1])
-        kernel = np.ones((3,3))
-        c = convolve2d(c,kernel,mode='same')
-        cind = np.where(c == np.max(c))
-        try:
-            xshift = cind[0][0]-Rcm.shape[0]+1
-        except IndexError:
-            print('Error: image failed to register.')
-            return None
-        yshift = cind[1][0]-Rcm.shape[1]+1
-        imint = max(0,-xshift)
-        imaxt = min(R.shape[0],R.shape[0]-xshift)
-        jmint = max(0,-yshift)
-        jmaxt = min(R.shape[1],R.shape[1]-yshift)
-        iminr = max(0,xshift)
-        imaxr = min(R.shape[0],R.shape[0]+xshift)
-        jminr = max(0,yshift)
-        jmaxr = min(R.shape[1],R.shape[1]+yshift)
-        R_new = np.zeros_like(T)
-        R_new[iminr:imaxr,jminr:jmaxr] = T[imint:imaxt,jmint:jmaxt]
-        return R_new
+        corrected_image = convolve(image, psf)
+        
+        return corrected_image
+    
+    def bleeding_trails(self, data):
 
-# Flux calibration
+        norm = (data - np.nanmedian(data)) / np.nanstd(data)
+        
+        bright_mask = norm > 8   # Threshold for very bright structures
+
+        selem = morphology.rectangle(10, 1)  # Morphological opening to remove point sources, keep vertical streaks
+        vertical_mask = morphology.opening(bright_mask, selem) # Vertical structuring element (length 20 pixels, width 1)
+
+        labels = measure.label(vertical_mask) # Label connected vertical structures
+        props = measure.regionprops(labels)
+
+        final_mask = np.zeros_like(vertical_mask, dtype=bool)
+        for p in props:
+            minr, minc, maxr, maxc = p.bbox
+            height = maxr - minr
+            width = maxc - minc
+            if height > 20 and width <= 4:  # vertical streak condition
+                final_mask[labels == p.label] = True
+
+        #  Repair by column interpolation
+        cleaned = data.copy()
+        for c in np.where(final_mask.any(axis=0))[0]:
+            col_mask = final_mask[:, c]
+            left = cleaned[:, c-1] if c > 0 else cleaned[:, c+1]
+            right = cleaned[:, c+1] if c < cleaned.shape[1]-1 else cleaned[:, c-1]
+            interp_col = np.median(np.vstack([left, right]), axis=0)
+            cleaned[col_mask, c] = interp_col[col_mask]
+            
+        return cleaned
+    
+    # def satellite_trails(self, data):
+        
+    #     norm = (data - np.nanmedian(data)) / np.nanstd(data)
+        
+    #     # Step 1: Edge detection (Canny)
+    #     edges = feature.canny(norm, sigma=2.0)
+
+    #     # Step 2: Hough transform for line detection
+    #     tested_angles = np.linspace(-np.pi/2, np.pi/2, 360)
+    #     hspace, angles, dists = transform.hough_line(edges, theta=tested_angles)
+    #     accum, angles_peaks, dists_peaks = transform.hough_line_peaks(
+    #         hspace, angles, dists, threshold=0.3 * np.max(hspace)
+    #     )
+
+    #     # Step 3: Create mask for detected lines
+    #     line_mask = np.zeros_like(data, dtype=bool)
+    #     for angle, dist in zip(angles_peaks, dists_peaks):
+    #         # Generate long lines through the image
+    #         for offset in np.linspace(-data.shape[1], data.shape[1], 2000):
+    #             x = int(dist * np.cos(angle) + offset * np.sin(angle))
+    #             y = int(dist * np.sin(angle) - offset * np.cos(angle))
+    #             if 0 <= x < data.shape[0] and 0 <= y < data.shape[1]:
+    #                 line_mask[x, y] = True
+
+    #     # Step 4: Keep only connected line segments > 40 pixels
+    #     labelled = measure.label(line_mask)  # FIXED: from skimage.measure
+    #     final_mask = np.zeros_like(line_mask)
+    #     for region in measure.regionprops(labelled):
+    #         if region.area > 40:
+    #             final_mask[labelled == region.label] = True
+
+    #     # Step 5: Inpaint/replace lines by median of surroundings
+    #     cleaned = data.copy()
+    #     dilated_mask = morphology.binary_dilation(final_mask, morphology.disk(1))
+    #     rows, cols = np.where(dilated_mask)
+    #     for r, c in zip(rows, cols):
+    #         rr_min, rr_max = max(r-3, 0), min(r+4, data.shape[0])
+    #         cc_min, cc_max = max(c-3, 0), min(c+4, data.shape[1])
+    #         patch = cleaned[rr_min:rr_max, cc_min:cc_max]
+    #         patch_mask = final_mask[rr_min:rr_max, cc_min:cc_max]
+    #         cleaned[r, c] = np.median(patch[~patch_mask])
+            
+    #     return cleaned
