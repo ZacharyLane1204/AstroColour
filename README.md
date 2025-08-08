@@ -15,21 +15,20 @@ in your script import the module. Here is an example:
 ```
 from AstroColour.AstroColour import RGB
 
-rgb = RGB(
-    data_cube,
-    colours=['red', 'green', 'blue'],
-    intensities=[0.55, 1, 0.6],
-    uppers=[99, 99, 99],
-    lowers=[5, 5, 5],
-    save=False,
-    save_name='test',
-    save_folder='/Users/zgl12/',
-    gamma=1.5,
-    norm='asinh',
-    epsf_plot=False,
-    epsf=True
-)
-colour = rgb.plot()
+rgb = RGB(data_cube,
+          save = False, save_name = 'test', save_folder = '/Users/zgl12/', 
+          epsf_plot=False, epsf = True,
+          bkg_plot = False, temp_save = True, run = True)
+
+calib_images = rgb.calib_images
+rgb.master_plot(calib_images, 
+                colours = ['red', 'green', 'blue'], 
+                intensities = [0.55, 1, 0.55], 
+                gamma = 1.2,
+                norms = ['asinh', 'asinh', 'asinh'], 
+                uppers = [99, 99, 99], 
+                lowers = [5, 5, 5], 
+                interactive=True)
 ```
 
 ```
@@ -76,3 +75,6 @@ Versions:
 - scikit-learn == 1.5.1
 - opencv-python == 4.9.0.80
 - astroscrappy == 1.2.0
+- ipympl == 0.9.7
+- ipython == 8.28.0
+- ipywidgets == 7.8.4
