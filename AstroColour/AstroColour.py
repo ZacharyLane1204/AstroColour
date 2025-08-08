@@ -3,6 +3,9 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import pandas as pd
 
+import ipywidgets as widgets
+from IPython.display import display, clear_output
+
 from astropy.io import fits
 from astropy.visualization import simple_norm
 from astropy.stats import sigma_clipped_stats, SigmaClip
@@ -60,13 +63,10 @@ fig_height_full = fig_width_full*golden_mean
 
 class RGB():
     def __init__(self, images, 
-                 colours = ['red', 'green', 'blue'], 
-                 intensities = [1, 1, 1],
-                 uppers = [98, 98, 98], lowers = [2, 2, 2],
                  save = False, save_name = '', save_folder = '',
-                 figure_size = None, manual_override = None, dpi = 900, 
-                 norm = 'linear', gamma = 1, epsf = True, 
-                 epsf_plot = False, bkg_plot = False, temp_save = True, run = True):
+                 figure_size = None, manual_override = None, dpi = 900,
+                 epsf = True, epsf_plot = False, bkg_plot = False, 
+                 temp_save = True, run = True):
         '''
         Create a RGB image from three images.
 
@@ -105,16 +105,6 @@ class RGB():
         run : Boolean
             Whether to process images or just use the framework
         '''
-        length = len(images)
-        
-        if len(colours) != length:
-            raise ValueError("Length of colours does not match the number of images.")
-        if len(intensities) != length:
-            raise ValueError("Length of intensities does not match the number of images.")
-        if len(uppers) != length:
-            raise ValueError("Length of uppers does not match the number of images.")
-        if len(lowers) != length:
-            raise ValueError("Length of lowers does not match the number of images.")
 
         self.save = save
         self.save_name = save_name
@@ -133,25 +123,9 @@ class RGB():
             manual_override = 100
         self.manual_override = manual_override
         
-        if isinstance(norm, str):
-            if ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norm):
-                norms = [norm]*len(images)
-            else:
-                raise ValueError("Not a valid norm. Try 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.")
-            
-        elif isinstance(norm, list) & (len(norm) == length):
-            norms = []
-            for i in range(len(norm)):
-                if not ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norm[i]):
-                    raise ValueError("Not a valid norm. Try 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.")
-                else:
-                    norms.append(norm[i])
-        
-        self.gamma = gamma
-        
         if run:
             images = self._preprocess_images(images)
-            self.process_images(images, colours, intensities, uppers, lowers, norms)
+            self.process_images(images)
         
     def _preprocess_images(self, images):
         
@@ -174,7 +148,7 @@ class RGB():
         
         return new_images
 
-    def process_images(self, images, colours, intensities, uppers, lowers, norms):
+    def process_images(self, images):
         """
         Process the images.
         
@@ -252,25 +226,151 @@ class RGB():
                     crmask, cleaned_image = self.cosmic_ray_removal(bkg_image)
                     calib_images.append(cleaned_image)
                 
-                coloured_image = self.running_norm_colour(cleaned_image, 
-                                                          lower = lowers[i], upper = uppers[i], 
-                                                          norm = norms[i], colour_choice = colours[i], 
-                                                          gamma = self.gamma, intensity = intensities[i])
-                
-                files.append(coloured_image)
-                
-                
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 im_composite = np.clip(np.nansum(files, axis=0), 0, 5)
         
-            self.im_composite = im_composite
+            # self.im_composite = im_composite
             self.calib_images = calib_images
 
             if self.temp_save:
                 np.save('image_composite.npy', im_composite)
                 np.save('calib_images.npy', calib_images)
+                
+    def _master_plot(self, cleaned_images, lowers, uppers, norms, colours, intensities, gamma):
+        
+        files = []
+        for i in range(len(cleaned_images)):
+            
+            coloured_image = self.running_norm_colour(cleaned_images[i], 
+                                                lower = lowers[i], upper = uppers[i], 
+                                                norm = norms[i], colour_choice = colours[i], 
+                                                gamma = gamma, intensity = intensities[i])
+            
+            files.append(coloured_image)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            im_composite = np.clip(np.nansum(files, axis=0), 0, 5)
+            
+        im_composite = self.plot(im_composite)
+        
+        return im_composite
+    
+    def master_plot(self, cleaned_images, lowers, uppers, norms, colours, intensities, gamma, interactive = True):
+        
+        length = len(cleaned_images)
+        
+        if len(colours) != length:
+            raise ValueError("Length of colours does not match the number of images.")
+        if len(intensities) != length:
+            raise ValueError("Length of intensities does not match the number of images.")
+        if len(uppers) != length:
+            raise ValueError("Length of uppers does not match the number of images.")
+        if len(lowers) != length:
+            raise ValueError("Length of lowers does not match the number of images.")
+        
+        if isinstance(norms, str):
+            if ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norms):
+                norms = [norms]*length
+            else:
+                raise ValueError("Not a valid norm. Try 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.")
+            
+        elif isinstance(norms, list) & (len(norms) == length):
+            new_norms = []
+            for i in range(len(norms)):
+                if not ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norms[i]):
+                    raise ValueError("Not a valid norm. Try 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.")
+                else:
+                    new_norms.append(norms[i])
+            norms = new_norms
+        
+        if interactive:
+            return self.master_plot_interactive(cleaned_images, lowers, uppers, norms, colours, intensities, gamma)
+        else:
+            im_comp =  self._master_plot(cleaned_images, lowers, uppers, norms, colours, intensities, gamma)
+            return im_comp
 
+    def master_plot_interactive(self, cleaned_images, lowers, uppers, norms, colours, intensities, gamma):
+        """
+        Interactive RGB composite plotter for Jupyter notebooks.
+        Gives per-channel controls for lower, upper, norm, and intensity,
+        plus a shared gamma slider.
+        """
+
+        n_channels = len(cleaned_images)
+        
+        # Widgets for each channel
+        lower_sliders = [
+            widgets.FloatSlider(value=lowers[i], min=0, max=50, step=0.5, description=f'Lower {colours[i]}')
+            for i in range(n_channels)
+        ]
+        upper_sliders = [
+            widgets.FloatSlider(value=uppers[i], min=50, max=100, step=0.5, description=f'Upper {colours[i]}')
+            for i in range(n_channels)
+        ]
+        intensity_sliders = [
+            widgets.FloatSlider(value=intensities[i], min=0.1, max=3, step=0.05, description=f'Intensity {colours[i]}')
+            for i in range(n_channels)
+        ]
+        norm_dropdowns = [
+            widgets.Dropdown(
+                options=['linear', 'sqrt', 'log', 'asinh', 'sinh'],
+                value=norms[i],
+                description=f'Norm {colours[i]}'
+            )
+            for i in range(n_channels)
+        ]
+        
+        # Shared gamma
+        gamma_slider = widgets.FloatSlider(value=gamma, min=0.1, max=5, step=0.1, description='Gamma (all)')
+
+        # Button to refresh
+        go_button = widgets.Button(description="Update Plot", button_style='success')
+
+        def update_plot(_):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                files = []
+                for i in range(n_channels):
+                    col_img = self.running_norm_colour(
+                        cleaned_images[i],
+                        lower=lower_sliders[i].value,
+                        upper=upper_sliders[i].value,
+                        norm=norm_dropdowns[i].value,
+                        colour_choice=colours[i],
+                        gamma=gamma_slider.value,
+                        intensity=intensity_sliders[i].value
+                    )
+                    files.append(col_img)
+                im_composite = np.clip(np.nansum(files, axis=0), 0, 5)
+
+            # Clear and redraw
+            clear_output(wait=True)
+            display(ui)  # Redisplay widgets
+            plt.figure(figsize=(6, 6))
+            plt.imshow(im_composite)
+            plt.axis('off')
+            plt.show()
+
+        go_button.on_click(update_plot)
+
+        # Pack widgets into vertical layout
+        channel_controls = []
+        for i in range(n_channels):
+            channel_controls.append(
+                widgets.VBox([
+                    lower_sliders[i],
+                    upper_sliders[i],
+                    intensity_sliders[i],
+                    norm_dropdowns[i]
+                ])
+            )
+
+        ui = widgets.VBox(channel_controls + [gamma_slider, go_button])
+        display(ui)
+
+        # Initial plot
+        update_plot(None)
 
     def running_norm_colour(self, image, lower = 2, upper = 98, 
                             norm = 'linear', colour_choice = 'red', 
