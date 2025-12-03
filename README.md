@@ -15,56 +15,86 @@ in your script import the module. Here is an example:
 ```
 from AstroColour.AstroColour import RGB
 
-rgb = RGB(data_cube,
-          save = False, save_name = 'test', save_folder = '/Users/zgl12/', 
-          epsf_plot=False, epsf = True,
-          bkg_plot = False, temp_save = True, run = True)
+rgb = RGB(colour_cube,
+          save = False, save_name = 'test', save_folder = './', 
+          epsf_plot=False, epsf = False,
+          bkg_plot = False, temp_save = True, run = False, manual_override=0)
 
-calib_images = rgb.calib_images
-rgb.master_plot(calib_images, 
-                colours = ['red', 'green', 'blue'], 
-                intensities = [0.55, 1, 0.55], 
-                gamma = 1.2,
-                norms = ['asinh', 'asinh', 'asinh'], 
-                uppers = [99, 99, 99], 
-                lowers = [5, 5, 5], 
-                interactive=True)
+colour = rgb.master_plot(colour_cube, 
+                         colours = ['red', 'green', 'blue'],
+                         intensities = [0.6, 1, 0.56], 
+                         gamma = [0.95, 0.95, 0.95],
+                         norms = ['asinh', 'asinh', 'asinh'], 
+                         uppers = [99, 99, 99],
+                         lowers = [5, 5, 5], 
+                         interactive=False)
 ```
 
 ```
+
+RGB Class
+
+Create a RGB image from three images.
+
+Parameters
+----------
 images : List
     List of Numpy Arrays of data images.
-colours : List
-  List of Tuples or Strings of colour choice.
-intensities : List
-  List of Floats between 0 and 1 for image intensities.
-uppers : List
-  List of Floats between 0 and 100 for upper percentile.
-lowers : List
-  List of Floats between 0 and 100 for lower percentile
 save : Boolean
-  Whether to save the image.
+    Whether to save the image.
 save_name : String
-  Detail to add in the saved filename.
+    Detail to add in the saved filename.
 save_folder : String
-  Folder to save the image.
+    Folder to save the image.
 figure_size : Float
-  Dimension of the image.
+    Dimension of the image.
 manual_override : Boolean
-  Whether to manually override the limits.
+    Whether to manually override the limits.
 dpi : Integer
-  DPI of the saved image.
-norm : String
-  Normalisation of the image. An option of 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.
-gamma : Float
-  Gamma correction of the image. Power to raise the image to.
+    DPI of the saved image.
 epsf : Boolean
-  Whether to use the EPSF method.
+    Whether to use the EPSF method.
 epsf_plot : Boolean
-  Whether to plot the EPSF kernel.
+    Whether to plot the EPSF kernel.
 run : Boolean
-  Whether to process images or just use the framework
+    Whether to process images or just use the framework
+        
 ```
+
+```
+
+master_plot function
+
+Master RGB composite plotter.
+
+Parameters
+----------
+cleaned_images : List
+    List of cleaned 2D numpy arrays.
+lowers : Float or List of Float
+    Lower percentile(s) (or counts) for normalization.
+uppers : Float or List of Float
+    Upper percentile(s) (or counts) for normalization.
+norms : String or List of String
+    Normalization method(s) ('linear', 'sqrt', 'log', 'asinh', 'sinh').
+colours : List
+    List of colour choices (tuples or strings).
+intensities : Float or List of Float
+    Intensity scaling factor(s).
+gamma : Float or List of Float
+    Gamma correction factor(s).
+interactive : Boolean
+    Whether to use interactive widgets for parameter adjustment.
+method : String
+    Normalization method type ('percent', 'sigma', 'counts').
+
+Returns
+-------
+im_comp : 2D array
+    The final RGB composite image.
+        
+```
+
 
 Versions:
 - numpy == 1.26.4

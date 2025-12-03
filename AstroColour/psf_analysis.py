@@ -32,8 +32,8 @@ class PSF_Analysis():
     
     def full_epsf_pipeline(self, image):
         
-        bkg = self.estimate_background(image)
-        image_bkgsub = image - bkg
+        # bkg = self.estimate_background(image)
+        image_bkgsub = image #- bkg
         
         epsf_data, epsf, positions = self.create_epsf_kernel(image_bkgsub)
         
@@ -72,7 +72,7 @@ class PSF_Analysis():
 
         fwhm = 5
 
-        daofind = DAOStarFinder(fwhm=fwhm, threshold=10.*std)  
+        daofind = DAOStarFinder(fwhm=fwhm, threshold=8.*std)  
         sources = daofind(data) 
 
         sources.sort('flux', reverse=True)
@@ -98,10 +98,16 @@ class PSF_Analysis():
         positions[:,0] = filtered_sources['xcentroid'].value
         positions[:,1] = filtered_sources['ycentroid'].value
         
-        estimated_fwhm = 2.5
+        estimated_fwhm = 5
+        
+        # print(f"Detected {len(positions)} sources, estimated FWHM: {estimated_fwhm}")
 
         cutout_size = self.cutting_board(filtered_sources, fwhm_guess = estimated_fwhm, 
                                          padding_factor=3.0, safety_margin=True)
+        
+        # print(f"Using cutout size: {cutout_size}")
+        
+        # cutout_size = 15
 
         db = DBSCAN(eps=cutout_size*2, min_samples=2).fit(positions) # Apply DBSCAN clustering
 
@@ -158,10 +164,12 @@ class PSF_Analysis():
             filtered_positions, _, cutout_size = self.position_func(data)
         else:
             positions = np.array(positions)
-            estimated_fwhm = 3
+            estimated_fwhm = 10
             cutout_size = self.cutting_board_manual(positions, data.shape, fwhm_guess=estimated_fwhm)
             filtered_positions = self._remove_edge_and_cluster_outliers(positions, cutout_size, data.shape)
 
+
+        # print(f"Using {len(filtered_positions)} stars for EPSF construction. {cutout_size}")
         stars_tbl = Table()
         stars_tbl['x'] = filtered_positions[:, 0]
         stars_tbl['y'] = filtered_positions[:, 1]
