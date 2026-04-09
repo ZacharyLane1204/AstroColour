@@ -5,3 +5,8 @@ scipy
 pandas
 scikit-learn
 photutils
+opencv-python
+astroscrappy
+ipympl
+ipython
+ipywidgets

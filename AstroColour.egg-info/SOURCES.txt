@@ -2,6 +2,13 @@ README.md
 setup.py
 AstroColour/AstroColour.py
 AstroColour/__init__.py
+AstroColour/analysis_tools.py
+AstroColour/hidden_prints.py
+AstroColour/image_rotation.py
+AstroColour/new_spatial_matcher.py
+AstroColour/pdastro.py
+AstroColour/psf_analysis.py
+AstroColour/spatial_psf_matcher.py
 AstroColour.egg-info/PKG-INFO
 AstroColour.egg-info/SOURCES.txt
 AstroColour.egg-info/dependency_links.txt

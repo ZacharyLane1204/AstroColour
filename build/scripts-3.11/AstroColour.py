@@ -3,29 +3,39 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import pandas as pd
 
-from astropy.io import fits
+import ipywidgets as widgets
+from IPython.display import display, clear_output
+
+# from astropy.io import fits
 from astropy.visualization import simple_norm
 from astropy.stats import sigma_clipped_stats, SigmaClip
-from astropy.wcs import WCS
-from astropy.nddata import NDData
-from astropy.table import Table
 from astropy.convolution import convolve
+# from astropy.convolution import convolve_fft
 
-from scipy.signal import fftconvolve, convolve2d
+from astroscrappy import detect_cosmics
 
-from photutils.detection import find_peaks
-from photutils.psf import extract_stars
-from photutils.psf import EPSFBuilder
-from photutils.detection import DAOStarFinder
-from photutils.psf import PSFPhotometry, IterativePSFPhotometry
-from photutils.background import LocalBackground, MMMBackground
-from photutils.psf import SourceGrouper
+from scipy.fft import fft2, ifft2, fftshift
+from scipy.ndimage import fourier_shift
+from scipy.ndimage import gaussian_filter
 
-from sklearn.cluster import DBSCAN
+from photutils.psf.matching import create_matching_kernel, TukeyWindow
+
+from skimage.registration import phase_cross_correlation
+from skimage import morphology, measure
+from skimage.filters import sobel
+from skimage.morphology import binary_dilation
+
+# from AstroColour.image_rotation import unrotate_image
+# from AstroColour.psf_analysis import PSF_Analysis, Simple_ePSF
+# from AstroColour.spatial_psf_matcher import SpatialPSFMatcher
+from AstroColour.pdastro import pdastrostatsclass
+from AstroColour.hidden_prints import hidden_prints
+from AstroColour.analysis_tools import Image_Analysis
 
 import os
 from copy import deepcopy
 from tqdm import tqdm
+import cv2
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -45,13 +55,10 @@ fig_height_full = fig_width_full*golden_mean
 
 class RGB():
     def __init__(self, images, 
-                 colours = ['red', 'green', 'blue'], 
-                 intensities = [1, 1, 1],
-                 uppers = [98, 98, 98], lowers = [2, 2, 2],
                  save = False, save_name = '', save_folder = '',
-                 figure_size = None, manual_override = None, dpi = 900, 
-                 norm = 'linear', gamma = 1, epsf = True, min_separation = 34, 
-                 star_size = 15, epsf_plot = False, cross_corr = True):
+                 figure_size = None, manual_override = None, dpi = 900,
+                 epsf = True, epsf_plot = False, bkg_plot = False, 
+                 temp_save = True, run = True):
         '''
         Create a RGB image from three images.
 
@@ -59,14 +66,6 @@ class RGB():
         ----------
         images : List
             List of Numpy Arrays of data images.
-        colours : List
-            List of Tuples or Strings of colour choice.
-        intensities : List
-            List of Floats between 0 and 1 for image intensities.
-        uppers : List
-            List of Floats between 0 and 100 for upper percentile.
-        lowers : List
-            List of Floats between 0 and 100 for lower percentile
         save : Boolean
             Whether to save the image.
         save_name : String
@@ -79,41 +78,19 @@ class RGB():
             Whether to manually override the limits.
         dpi : Integer
             DPI of the saved image.
-        norm : String
-            Normalisation of the image. An option of 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.
-        gamma : Float
-            Gamma correction of the image. Power to raise the image to.
         epsf : Boolean
             Whether to use the EPSF method.
-        min_separation : Float
-            Minimum separation between stars.
-        star_size : Float
-            Size of the stars for the EPSF method.
         epsf_plot : Boolean
             Whether to plot the EPSF kernel.
-        cross_corr : Boolean
-            Whether to cross correlate the images.
+        run : Boolean
+            Whether to process images or just use the framework
         '''
-        length = len(images)
-        
-        if len(colours) != length:
-            raise ValueError("Length of colours does not match the number of images.")
-        if len(intensities) != length:
-            raise ValueError("Length of intensities does not match the number of images.")
-        if len(uppers) != length:
-            raise ValueError("Length of uppers does not match the number of images.")
-        if len(lowers) != length:
-            raise ValueError("Length of lowers does not match the number of images.")
 
         self.save = save
         self.save_name = save_name
         self.save_folder = save_folder
         self.dpi = dpi
-        self.min_separation = min_separation
         self.epsf = epsf
-        self.star_size = star_size
-        self.epsf_plot = epsf_plot
-        self.cross_corr = cross_corr
 
         self.figure_size = figure_size
         if self.figure_size == None:
@@ -123,260 +100,196 @@ class RGB():
             manual_override = 100
         self.manual_override = manual_override
         
-        if isinstance(norm, str):
-            if ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norm):
-                norms = [norm]*len(images)
+        if run:
+            ianalysis = Image_Analysis(images, epsf_plot = epsf_plot, bkg_plot = bkg_plot, temp_save = temp_save)
+            self.calib_images = ianalysis.calib_images
+            self.diff_images = ianalysis.diff_images
+                
+    def _master_plot(self, cleaned_images, lowers, uppers, norms, colours, intensities, gamma, method):
+        
+        length = len(cleaned_images)
+        
+        if len(colours) != length:
+            raise ValueError("Length of colours does not match the number of images.")
+        
+        if isinstance(intensities, float): 
+            intensities = [intensities] * len(cleaned_images)
+        elif len(intensities) != length:
+            raise ValueError("Length of intensities does not match the number of images.")
+        
+        if isinstance(uppers, float): 
+            uppers = [uppers] * len(cleaned_images)
+        elif len(uppers) != length:
+            raise ValueError("Length of uppers does not match the number of images.")
+        
+        if isinstance(lowers, float): 
+            lowers = [lowers] * len(cleaned_images)
+        elif len(lowers) != length:
+            raise ValueError("Length of lowers does not match the number of images.")
+        
+        if isinstance(gamma, float): 
+            gamma = [gamma] * len(cleaned_images)
+        elif len(gamma) != length:
+            raise ValueError("Length of lowers does not match the number of images.")
+        
+        if isinstance(norms, str):
+            if ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norms):
+                norms = [norms]*length
             else:
                 raise ValueError("Not a valid norm. Try 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.")
             
-        elif isinstance(norm, list) & (len(norm) == length):
-            norms = []
-            for i in range(len(norm)):
-                if not ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norm[i]):
+        elif isinstance(norms, list) & (len(norms) == length):
+            new_norms = []
+            for i in range(len(norms)):
+                if not ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norms[i]):
                     raise ValueError("Not a valid norm. Try 'linear', 'sqrt', 'log', 'asinh' or 'sinh'.")
                 else:
-                    norms.append(norm[i])
+                    new_norms.append(norms[i])
+            norms = new_norms
         
-        self.gamma = gamma
-        
-        self.process_images(images, colours, intensities, uppers, lowers, norms)
-
-    def process_images(self, images, colours, intensities, uppers, lowers, norms):
-        """
-        Process the images.
-        
-        Parameters
-        ----------
-        images : List
-            List of Numpy Arrays of data images.
-        colours : List
-            List of Tuples or Strings of colour choice.
-        intensities : List
-            List of Floats between 0 and 1 for image intensities.
-        uppers : List
-            List of Floats between 0 and 100 for upper percentile.
-        lowers : List
-            List of Floats between 0 and 100 for lower percentile
-        """
-        
-        calib_images = []
-        calib_colours = []
-        calib_intensities = []
-        calib_uppers = []
-        calib_lowers = []
         files = []
-        
-        try:
-            if self.epsf:
-                epsf_kernels = []
-                over_sampled_epsf = []
-                
-                for image in images:
-                    epsf_kernel, over_sampled = self.create_epsf_kernel(image)
-                    epsf_kernels.append(epsf_kernel)
-                    over_sampled_epsf.append(over_sampled)
-                fwhms = [self.calculate_fwhm(kernel) for kernel in over_sampled_epsf]  # Calculate FWHM for each EPSF
-                largest_fwhm_kernel = epsf_kernels[np.nanargmax(fwhms)]  # Identify the EPSF with the largest FWHM
-                
-                idx = np.nanargmax(fwhms)
-                self.epsf = True
-            else:
-                self.epsf = False
-                idx = 0
-        except:
-            self.epsf = False
-            idx = 0
-            print('EPSF failed to create. Skipping...')
+        for i in range(len(cleaned_images)):
             
-        for i in tqdm(range(len(images)), desc = 'Processing Images'):
+            coloured_image = self.running_norm_colour(cleaned_images[i], 
+                                                lower = lowers[i], upper = uppers[i], 
+                                                norm = norms[i], colour_choice = colours[i], 
+                                                gamma = gamma[i], intensity = intensities[i], method = method)
             
-            if i == 0:
-                if self.epsf & (idx != 0):
-                    image = self.match_psf(images[i], largest_fwhm_kernel)
-                else:
-                    image = images[i]
-                calib_images.append(image)
-                
-            else:
-                if self.epsf:
-                    image = self.subsequent_images(images[i], largest_fwhm_kernel, calib_images[0])
-                else:
-                    image = images[i]
-                calib_images.append(image)
-            
-            p_norm = self.percent_norm(image, lower = lowers[i], upper = uppers[i], norm = norms[i])
-            colour = self.colour_check(colours[i])
-            calib_colours.append(colour)
-            
-            files.append(self.colourise(p_norm, colour, intensities[i]))
-            
-            calib_intensities.append(intensities[i])
-            calib_uppers.append(uppers[i])
-            calib_lowers.append(lowers[i])
-            
-        self.images = calib_images
-        self.colours = calib_colours
-        self.intensities = calib_intensities
-        self.uppers = calib_uppers
-        self.lowers = calib_lowers
-        self.files = files
-        
+            files.append(coloured_image)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            im_composite = np.clip(np.nansum(files, axis=0), 0, 10)
-    
-        self.im_composite = im_composite
+            im_composite = np.clip(np.nansum(files, axis=0), 0, 5)
+        im_composite = self.plot(im_composite)
         
-    def subsequent_images(self, image, largest_fwhm_kernel, match_image):
+        return im_composite
+    
+    def master_plot(self, cleaned_images, lowers, uppers, norms, colours, 
+                    intensities, gamma, interactive = True, method = 'percent'):
         """
-        Process subsequent images.
+        Master RGB composite plotter.
         
         Parameters
         ----------
-        image : 2d array
-            Image to be processed.
-        epsf_kernel : 2d array
-            EPSF kernel.
-        largest_fwhm_kernel : 2d array
-            EPSF kernel with the largest FWHM.
-        match_image : 2d array
-            Image to match the PSF to.
-            
+        cleaned_images : List
+            List of cleaned 2D numpy arrays.
+        lowers : Float or List of Float
+            Lower percentile(s) (or counts) for normalization.
+        uppers : Float or List of Float
+            Upper percentile(s) (or counts) for normalization.
+        norms : String or List of String
+            Normalization method(s) ('linear', 'sqrt', 'log', 'asinh', 'sinh').
+        colours : List
+            List of colour choices (tuples or strings).
+        intensities : Float or List of Float
+            Intensity scaling factor(s).
+        gamma : Float or List of Float
+            Gamma correction factor(s).
+        interactive : Boolean
+            Whether to use interactive widgets for parameter adjustment.
+        method : String
+            Normalization method type ('percent', 'sigma', 'counts').
+        
         Returns
         -------
-        new_image : 2d array
-            Processed image.
+        im_comp : 2D array
+            The final RGB composite image.
         """
-        if self.cross_corr:
-            new_image = self.register(image, match_image)
-            if new_image is None:
-                    new_image = image
+        
+        if interactive:
+            return self.master_plot_interactive(cleaned_images, lowers, uppers, norms, colours, intensities, gamma, method)
         else:
-            new_image = image
-                
-        if self.epsf:
-            new_image = self.match_psf(new_image, largest_fwhm_kernel)
-            
-        return new_image
+            im_comp =  self._master_plot(cleaned_images, lowers, uppers, norms, colours, intensities, gamma, method)
+            return im_comp
 
-    def match_psf(self, image, psf):
+    def master_plot_interactive(self, cleaned_images, lowers, uppers, norms, colours, intensities, gammas, method):
         """
-        Match the PSF of two images.
-        
-        Parameters
-        ----------
-        image : 2d array
-            Image to be processed.
-        psf : 2d array
-            PSF kernel of the largest image.
-            
-        Returns
-        -------
-        corrected_image : 2d array
-            Image with matched PSF.
+        Interactive RGB composite plotter for Jupyter notebooks.
+        Gives per-channel controls for lower, upper, norm, and intensity,
+        plus a shared gamma slider.
         """
 
-        corrected_image = convolve(image, psf)
+        n_channels = len(cleaned_images)
         
-        return corrected_image
-
-    def _star_extraction(self, data):
-        '''
-        Extract stars from the image.
+        lower_sliders = [widgets.FloatSlider(value=lowers[i], min=0, max=50, step=0.5, description=f'Lower {colours[i]}')
+                         for i in range(n_channels)]
+        upper_sliders = [widgets.FloatSlider(value=uppers[i], min=50, max=100, step=0.5, description=f'Upper {colours[i]}')
+                         for i in range(n_channels)]
+        intensity_sliders = [widgets.FloatSlider(value=intensities[i], min=0.1, max=3, step=0.05, description=f'Intensity {colours[i]}')
+                             for i in range(n_channels)]
+        norm_dropdowns = [widgets.Dropdown(options=['linear', 'sqrt', 'log', 'asinh', 'sinh'], value=norms[i],
+                                           description=f'Norm {colours[i]}') for i in range(n_channels)]
         
-        Parameters
-        ----------
-        data : 2d array
-            FITS Image.
-        '''
+        gamma_sliders = [widgets.FloatSlider(value=gammas[i], min=0.05, max=5, step=0.05, description=f'Gamma {colours[i]}')
+                         for i in range(n_channels)]
         
-        nddata = NDData(data=data) 
-        mean, median, std = sigma_clipped_stats(data, sigma=3.0) 
+        # gamma_slider = widgets.FloatSlider(value=gamma, min=0.1, max=5, step=0.1, description='Gamma (all)')
 
-        fwhm = 5
+        go_button = widgets.Button(description="Update Plot", button_style='success')
 
-        daofind = DAOStarFinder(fwhm=fwhm, threshold=10.*std)  
-        sources = daofind(data) 
+        def update_plot(_):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                files = []
+                for i in range(n_channels):
+                    col_img = self.running_norm_colour(
+                        cleaned_images[i],
+                        lower=lower_sliders[i].value,
+                        upper=upper_sliders[i].value,
+                        norm=norm_dropdowns[i].value,
+                        colour_choice=colours[i],
+                        gamma=gamma_sliders[i].value,
+                        intensity=intensity_sliders[i].value,
+                        method=method
+                    )
+                    files.append(col_img)
+                im_composite = np.clip(np.nansum(files, axis=0), 0, 5)
 
-        sources.sort('flux', reverse=True)
-
-        positions = np.zeros((len(sources), 2))
-        positions[:,0] = sources['xcentroid'].value
-        positions[:,1] = sources['ycentroid'].value
-
-        db = DBSCAN(eps=self.min_separation, min_samples=2).fit(positions) # Apply DBSCAN clustering
-
-        labels = db.labels_ # Get the labels assigned by DBSCAN (-1 means noise)
-
-        filtered_positions_temp = positions[labels == -1] # Filter out the points that are considered noise
-
-        condition = np.logical_and(np.logical_and(filtered_positions_temp[:, 0] >= self.min_separation, 
-                                                filtered_positions_temp[:, 0] <= (data.shape[0] - self.min_separation)), 
-                                    np.logical_and(filtered_positions_temp[:, 1] >= self.min_separation, 
-                                                filtered_positions_temp[:, 1] <= (data.shape[1] - self.min_separation)))
-
-        filtered_positions = filtered_positions_temp[condition]
-
-        stars_tbl = Table()
-        stars_tbl['x'] = filtered_positions[:,0]
-        stars_tbl['y'] = filtered_positions[:,1]
-
-        stars = extract_stars(nddata, stars_tbl, size=self.star_size)
-
-        return stars
-
-    def create_epsf_kernel(self, data):
-        '''
-        Create an EPSF kernel based on Anderson and King (2000).
-
-        Returns
-        -------
-        epsf_kernel : 2d array
-            EPSF kernel.
-        '''
-        
-        stars = self._star_extraction(data)
-        epsf_builder = EPSFBuilder(oversampling=1, maxiters = 20, progress_bar=False, 
-                                   recentering_maxiters = 10, smoothing_kernel='quartic')
-        epsf, _ = epsf_builder(stars)
-        
-        epsf_builder_4 = EPSFBuilder(oversampling=4, maxiters = 20, progress_bar=False, 
-                                     recentering_maxiters = 10, smoothing_kernel='quartic')
-        epsf_4, _ = epsf_builder_4(stars)
-        
-        if self.epsf_plot:
-            plt.figure()
-            plt.imshow(epsf.data)
+            clear_output(wait=True)
+            display(ui)  # Redisplay widgets
+            plt.figure(figsize=(6, 6))
+            plt.imshow(im_composite)
+            plt.axis('off')
             plt.show()
+
+        go_button.on_click(update_plot)
+
+        channel_controls = []
+        for i in range(n_channels):
+            channel_controls.append(
+                widgets.VBox([
+                    lower_sliders[i],
+                    upper_sliders[i],
+                    intensity_sliders[i],
+                    norm_dropdowns[i], 
+                    gamma_sliders[i]
+                ])
+            )
+
+        ui = widgets.VBox(channel_controls + [go_button])
+        display(ui)
+
+        update_plot(None)
+
+    def running_norm_colour(self, image, lower = 2, upper = 98, 
+                            norm = 'linear', colour_choice = 'red', 
+                            gamma = 1, intensity = 1, method = 'percent'):
+                
+        p_norm = self.percent_norm(image, lower = lower, upper = upper, norm = norm, gamma = gamma, method = method)
+        colour = self.colour_check(colour_choice)
+                
+        coloured_image = self.colourise(p_norm, colour, intensity)
         
-        return epsf.data, epsf_4.data
+        return coloured_image
     
-    def calculate_fwhm(self, kernel):
-        '''
-        Calculate the Full Width at Half Maximum (FWHM) of an EPSF kernel in two dimensions.
+    def _data_slicing(self, background):
+        
+        prep_data = background.ravel().copy()
+        prep_data = prep_data[np.isfinite(prep_data)]
 
-        Parameters
-        ----------
-        kernel : 2d array
-            EPSF kernel.
-
-        Returns
-        -------
-        fwhm : float
-            FWHM of the EPSF kernel.
-        '''
+        prep_data = prep_data[(prep_data > np.nanpercentile(prep_data, 5)) & (prep_data < np.nanpercentile(prep_data, 95))]
         
-        half_max = np.nanmax(kernel) / 2
-        # indices = np.where(kernel >= half_max)
-        contour = kernel > half_max
+        return prep_data
         
-        y, x = np.where(contour)
-        
-        fwhm_x = np.ptp(x)
-        fwhm_y = np.ptp(y)
-        
-        return max(fwhm_x, fwhm_y)
-
     def colourise(self, im, colour, intensity):
         '''
         Colourise the image. and scale the intensity.
@@ -430,7 +343,7 @@ class RGB():
             raise ValueError("Not a valid input. Try a named colour in matplotlib or a tuple in the form (255,255,255).")
         return colour
 
-    def percent_norm(self, x, lower = 2, upper = 98, norm = 'linear'):
+    def percent_norm(self, x, lower = 2, upper = 98, norm = 'linear', gamma = 1, method = 'percent'):
         '''
         Rescale the image to a percentage scale.
 
@@ -448,21 +361,26 @@ class RGB():
         arr_rescaled : 2d array
             Normalised percentage scaled 2d array.
         '''
-
-        # x_low = np.nanpercentile(x, lower)
-        # x_hi = np.nanpercentile(x, upper)
         
-        # Scale the array so that its minimum and maximum values correspond to the 2nd and 98th percentile values, respectively
-        # arr_rescaled = np.interp(x, (x_low, x_hi), (0, 1))
+        if method.lower() == 'percent':
+            normed = simple_norm(x, stretch=norm, min_percent=lower, max_percent=upper)
+        elif method.lower() == 'sigma':
+            mean, median, std = sigma_clipped_stats(x, sigma_upper = upper, sigma_lower = lower, maxiters = 5)
+            vmin = median - (lower * std)
+            vmax = median + (upper * std)
+            normed = simple_norm(x, stretch=norm, vmin=vmin, vmax=vmax)
+        elif method.lower() == 'counts':
+            normed = simple_norm(x, stretch=norm, vmin=vmin, vmax=vmax)
+        else:
+            raise ValueError("Not a valid method. Try 'percent', 'sigma' or 'counts'.")
         
-        normed = simple_norm(x, stretch=norm, min_percent=lower, max_percent=upper)
         arr_rescaled = normed(x)
         
-        arr_rescaled = np.power(arr_rescaled, self.gamma)
+        arr_rescaled = np.power(arr_rescaled, gamma)
         
         return arr_rescaled
 
-    def plot(self):
+    def plot(self, image = None):
         '''
         Plot the final image.
 
@@ -471,10 +389,19 @@ class RGB():
         im_composite : 3d array
             2d arrays that are stacked in a third axis.
         '''
-        im_composite = self.im_composite
+        
+        if image is not None:
+            im_composite = image.copy()
+        else:
+            try:
+                im_composite = np.load('image_composite.npy')
+            except:
+                im_composite = self.im_composite
+            finally:
+                raise ValueError('Either put in an array')
 
         plt.figure(figsize = (self.figure_size,self.figure_size))
-        plt.imshow(im_composite)
+        plt.imshow(im_composite, origin = 'lower')
         plt.axis('off')
         plt.xlim(self.manual_override , im_composite.shape[1] - self.manual_override )
         plt.ylim(self.manual_override , im_composite.shape[0] - self.manual_override )
@@ -484,44 +411,23 @@ class RGB():
         plt.show()
         
         return im_composite
+    
+    def inpaint_masked_pixels(self, image, mask):
+        image_norm = (image - np.nanmin(image)) / (np.nanmax(image) - np.nanmin(image))
+        image_8bit = np.uint8(image_norm * 255)
+        mask_8bit = np.uint8(mask * 255)
 
-    def register(self, T, R):
-        """
-        Register two images using cross-correlation.
-
-        Parameters
-        ----------
-        T : 2d array
-            Image to be transformed.
-        R : 2d array
-            Reference image.
-        Returns
-        -------
-        R_new : 2d array
-        """ 
-
-        Rcm = R - np.median(R)
-        Tcm = T - np.median(T)
-        c = fftconvolve(Rcm, Tcm[::-1, ::-1])
-        kernel = np.ones((3,3))
-        c = convolve2d(c,kernel,mode='same')
-        cind = np.where(c == np.max(c))
-        try:
-            xshift = cind[0][0]-Rcm.shape[0]+1
-        except IndexError:
-            print('Error: image failed to register.')
-            return None
-        yshift = cind[1][0]-Rcm.shape[1]+1
-        imint = max(0,-xshift)
-        imaxt = min(R.shape[0],R.shape[0]-xshift)
-        jmint = max(0,-yshift)
-        jmaxt = min(R.shape[1],R.shape[1]-yshift)
-        iminr = max(0,xshift)
-        imaxr = min(R.shape[0],R.shape[0]+xshift)
-        jminr = max(0,yshift)
-        jmaxr = min(R.shape[1],R.shape[1]+yshift)
-        R_new = np.zeros_like(T)
-        R_new[iminr:imaxr,jminr:jmaxr] = T[imint:imaxt,jmint:jmaxt]
-        return R_new
-
-# Flux calibration
+        inpainted = cv2.inpaint(image_8bit, mask_8bit, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
+        return inpainted.astype(float) / 255 * (np.nanmax(image) - np.nanmin(image)) + np.nanmin(image)
+    
+    # def positioning_aligning(self, positions_ref, positions_target, target_image):
+    #     tree = cKDTree(positions_ref)
+    #     dist, idx = tree.query(positions_target, distance_upper_bound=3)  # max matching radius
+    #     matched_ref = positions_ref[idx[dist != np.inf]]
+    #     matched_target = positions_target[dist != np.inf]
+        
+    #     tform = estimate_transform('similarity', matched_target, matched_ref)
+        
+    #     aligned_image = warp(target_image, inverse_map=tform.inverse, order=3, preserve_range=True)
+        
+    #     return aligned_image

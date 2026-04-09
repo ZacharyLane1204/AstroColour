@@ -92,10 +92,13 @@ class Image_Analysis():
                 
                 bkg_image = self.backgrounding(cleaned_image, plot=self.bkg_plot)
                 
-                taper = TukeyWindow(alpha=0.5)
-                kernel = create_matching_kernel(epsfs[i], epsfs[idx], window = taper)
-                corrected_image = self.match_psf(bkg_image, kernel)
-                
+                if self.epsf:
+                    taper = TukeyWindow(alpha=0.5)
+                    kernel = create_matching_kernel(epsfs[i], epsfs[idx], window = taper)
+                    corrected_image = self.match_psf(bkg_image, kernel)
+                    calib_images.append(corrected_image)
+                else:
+                    calib_images.append(bkg_image)
                 # diff_images.append(cleaned_image_master - corrected_image)
                 # diff_images.append(diffs)
                 calib_images.append(corrected_image)
