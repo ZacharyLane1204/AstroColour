@@ -101,7 +101,8 @@ class RGB():
         self.manual_override = manual_override
         
         if run:
-            ianalysis = Image_Analysis(images, epsf_plot = epsf_plot, bkg_plot = bkg_plot, temp_save = temp_save)
+            ianalysis = Image_Analysis(images, epsf_plot = epsf_plot, bkg_plot = bkg_plot, 
+                                       temp_save = temp_save, epsf = epsf)
             self.calib_images = ianalysis.calib_images
             self.diff_images = ianalysis.diff_images
                 
@@ -130,7 +131,7 @@ class RGB():
         if isinstance(gamma, float): 
             gamma = [gamma] * len(cleaned_images)
         elif len(gamma) != length:
-            raise ValueError("Length of lowers does not match the number of images.")
+            raise ValueError("Length of gammas does not match the number of images.")
         
         if isinstance(norms, str):
             if ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norms):
