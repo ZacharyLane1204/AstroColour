@@ -101,7 +101,6 @@ class Image_Analysis():
                     calib_images.append(bkg_image)
                 # diff_images.append(cleaned_image_master - corrected_image)
                 # diff_images.append(diffs)
-                calib_images.append(corrected_image)
             self.diff_images = [calib_images[i] - calib_images[idx] for i in range(len(calib_images))]
             self.calib_images = calib_images
 

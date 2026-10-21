@@ -3,6 +3,7 @@ setup.py
 AstroColour/AstroColour.py
 AstroColour/__init__.py
 AstroColour/analysis_tools.py
+AstroColour/display_noise.py
 AstroColour/hidden_prints.py
 AstroColour/image_rotation.py
 AstroColour/new_spatial_matcher.py

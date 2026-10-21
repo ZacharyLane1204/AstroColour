@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib as mpl
 import pandas as pd
 
 import ipywidgets as widgets
@@ -31,6 +32,7 @@ from skimage.morphology import binary_dilation
 from AstroColour.pdastro import pdastrostatsclass
 from AstroColour.hidden_prints import hidden_prints
 from AstroColour.analysis_tools import Image_Analysis
+from AstroColour.display_noise import asinh_sigma_norm, chroma_denoise
 
 import os
 from copy import deepcopy
@@ -101,16 +103,26 @@ class RGB():
         self.manual_override = manual_override
         
         if run:
-            ianalysis = Image_Analysis(images, epsf_plot = epsf_plot, bkg_plot = bkg_plot, temp_save = temp_save)
+            ianalysis = Image_Analysis(images, epsf_plot = epsf_plot, bkg_plot = bkg_plot, 
+                                       temp_save = temp_save, epsf = epsf)
             self.calib_images = ianalysis.calib_images
             self.diff_images = ianalysis.diff_images
                 
-    def _master_plot(self, cleaned_images, lowers, uppers, norms, colours, intensities, gamma, method):
+    def _master_plot(self, cleaned_images, lowers, uppers, norms, colours, intensities, gamma, method, cmap_choice = None, chroma_denoise_final = False):
         
         length = len(cleaned_images)
         
-        if len(colours) != length:
-            raise ValueError("Length of colours does not match the number of images.")
+        if cmap_choice is not None:
+            try:
+                cmap = mpl.colormaps[cmap_choice].resampled(length)
+                rgb_hex_strings = [mpl.colors.to_hex(cmap(i)) for i in range(length)]
+                colours = rgb_hex_strings
+            except:
+                raise ValueError("Use a valid matplotlib colormap")
+        
+        else:
+            if len(colours) != length:
+                raise ValueError("Length of colours does not match the number of images.")
         
         if isinstance(intensities, float): 
             intensities = [intensities] * len(cleaned_images)
@@ -130,7 +142,7 @@ class RGB():
         if isinstance(gamma, float): 
             gamma = [gamma] * len(cleaned_images)
         elif len(gamma) != length:
-            raise ValueError("Length of lowers does not match the number of images.")
+            raise ValueError("Length of gammas does not match the number of images.")
         
         if isinstance(norms, str):
             if ['linear', 'sqrt', 'log', 'asinh', 'sinh'].__contains__(norms):
@@ -159,12 +171,15 @@ class RGB():
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             im_composite = np.clip(np.nansum(files, axis=0), 0, 5)
+        if chroma_denoise_final:
+            im_composite = chroma_denoise(im_composite)
         im_composite = self.plot(im_composite)
         
         return im_composite
     
     def master_plot(self, cleaned_images, lowers, uppers, norms, colours, 
-                    intensities, gamma, interactive = True, method = 'percent'):
+                    intensities, gamma, interactive = True, method = 'percent', cmap_choice = None,
+                    chroma_denoise_final = False):
         """
         Master RGB composite plotter.
         
@@ -188,6 +203,12 @@ class RGB():
             Whether to use interactive widgets for parameter adjustment.
         method : String
             Normalization method type ('percent', 'sigma', 'counts').
+        cmap_choice : String, optional
+            Matplotlib colormap choice for the composite image (default is None).
+        chroma_denoise_final : Boolean
+            Whether to smooth colour noise on the finished composite (keeps
+            luminance detail and star colours; see display_noise.chroma_denoise).
+            Only applies when interactive=False.
         
         Returns
         -------
@@ -196,12 +217,12 @@ class RGB():
         """
         
         if interactive:
-            return self.master_plot_interactive(cleaned_images, lowers, uppers, norms, colours, intensities, gamma, method)
+            return self.master_plot_interactive(cleaned_images, lowers, uppers, norms, colours, intensities, gamma, method, cmap_choice)
         else:
-            im_comp =  self._master_plot(cleaned_images, lowers, uppers, norms, colours, intensities, gamma, method)
+            im_comp =  self._master_plot(cleaned_images, lowers, uppers, norms, colours, intensities, gamma, method, cmap_choice, chroma_denoise_final)
             return im_comp
 
-    def master_plot_interactive(self, cleaned_images, lowers, uppers, norms, colours, intensities, gammas, method):
+    def master_plot_interactive(self, cleaned_images, lowers, uppers, norms, colours, intensities, gammas, method, cmap_choice = None):
         """
         Interactive RGB composite plotter for Jupyter notebooks.
         Gives per-channel controls for lower, upper, norm, and intensity,
@@ -209,6 +230,18 @@ class RGB():
         """
 
         n_channels = len(cleaned_images)
+        
+        if cmap_choice is not None:
+            try:
+                cmap = mpl.colormaps[cmap_choice].resampled(n_channels)
+                rgb_hex_strings = [mpl.colors.to_hex(cmap(i)) for i in range(n_channels)]
+                colours = rgb_hex_strings
+            except:
+                raise ValueError("Use a valid matplotlib colormap")
+        
+        else:
+            if len(colours) != n_channels:
+                raise ValueError("Length of colours does not match the number of images.")
         
         lower_sliders = [widgets.FloatSlider(value=lowers[i], min=0, max=50, step=0.5, description=f'Lower {colours[i]}')
                          for i in range(n_channels)]
@@ -316,65 +349,107 @@ class RGB():
 
     def colour_check(self, colour):
         '''
-        Change the colour to a RGB tuple.
+        Change the colour to an RGB tuple scaled between 0 and 1.
 
         Parameters
         ----------
         colour : Tuple or String
-            Defining what colour choice for the channel
+            Defining what colour choice for the channel (named color, hex string, or 0-255 tuple)
 
         Raises
         ------
         ValueError
-            Needs to be a named colour in matplotlib or a tuple in the form (255,255,255).
+            Needs to be a valid matplotlib color or a tuple in the form (255,255,255).
 
         Returns
         -------
         colour : Tuple
             RGB colour tuple scaled between 0 and 1.
         '''
-
-        if isinstance(colour, tuple):
-            colour = tuple(ci/255 for ci in colour)
-        elif isinstance(colour, str):
-            colour = tuple(int(c*255) for c in mcolors.to_rgb(colour))
-            colour = tuple(ci/255 for ci in colour)
+        
+        if isinstance(colour, tuple): # 1. Handle (255, 255, 255) style integer tuples
+            
+            colour = tuple(ci / 255 for ci in colour[:3])  # [:3] strips alpha if present # Ensure it's treated as integers/floats up to 255 and scaled to 0-1
+            
+        elif isinstance(colour, str): # 2. Handle Strings (both named colors like 'red' AND hex strings like '#ff0000')
+            try:
+                colour = mcolors.to_rgb(colour) # mcolors.to_rgb handles names AND hex strings directly, returning a 0-1 tuple
+            except ValueError:
+                raise ValueError(f"'{colour}' is not a valid named color or hex string in matplotlib.")
+                
         else:
-            raise ValueError("Not a valid input. Try a named colour in matplotlib or a tuple in the form (255,255,255).")
+            raise ValueError("Not a valid input. Try a named colour, a hex string, or a tuple in the form (255,255,255).")
+            
         return colour
 
-    def percent_norm(self, x, lower = 2, upper = 98, norm = 'linear', gamma = 1, method = 'percent'):
+
+    def percent_norm(self, x, lower = 2, upper = 98, norm = 'linear', gamma = 1,
+                     method = 'percent', clip_sigma = 3.0, soft_sigma = 3.0):
         '''
-        Rescale the image to a percentage scale.
+        Rescale the image to a 0-1 display scale.
 
         Parameters
         ----------
         x : 2d array
             FITS image.
         lower : float
-            lowest percent data to cut out.
+            method='percent': lowest percentile to cut out.
+            method='sigma': black point, in noise-sigma below the (clipped)
+            median.
+            method='counts': black point, in raw data counts.
+            method='asinh_sigma': black point, in noise-sigma below the
+            (clipped) median -- same convention as 'sigma'.
         upper : float
-            highest percent data to cut out.
+            method='percent': highest percentile to cut out.
+            method='sigma': white point, in noise-sigma above the median.
+            method='counts': white point, in raw data counts.
+            method='asinh_sigma': white point, as a percentile of the data
+            (protects against a single hot pixel setting the scale).
+        method : string
+            'percent'     - astropy simple_norm on percentiles of the data.
+            'sigma'       - linear/asinh/etc. stretch with black/white points
+                            set from a sigma-clipped median and std. `lower`
+                            and `upper` are how many sigma below/above the
+                            median the black/white points sit; the clip
+                            itself always uses `clip_sigma` (previously this
+                            reused `lower`/`upper` as the clip threshold too,
+                            which for the defaults (2, 98) clipped almost
+                            nothing).
+            'counts'      - black/white points given directly as `lower`/
+                            `upper` in raw counts (previously undefined
+                            `vmin`/`vmax` made this raise a NameError).
+            'asinh_sigma' - noise-aware asinh stretch in sigma units, see
+                            display_noise.asinh_sigma_norm. Best for faint/
+                            noisy data and nebula fields, especially when
+                            combined with a background_rms map and a
+                            source/nebula mask (call
+                            display_noise.asinh_sigma_norm directly for that;
+                            this method uses a plain sigma-clip since
+                            percent_norm only sees one image at a time).
 
         Returns
         -------
         arr_rescaled : 2d array
-            Normalised percentage scaled 2d array.
+            Normalised 0-1 scaled 2d array.
         '''
         
         if method.lower() == 'percent':
             normed = simple_norm(x, stretch=norm, min_percent=lower, max_percent=upper)
+            arr_rescaled = normed(x)
         elif method.lower() == 'sigma':
-            mean, median, std = sigma_clipped_stats(x, sigma_upper = upper, sigma_lower = lower, maxiters = 5)
+            mean, median, std = sigma_clipped_stats(x, sigma = clip_sigma, maxiters = 5)
             vmin = median - (lower * std)
             vmax = median + (upper * std)
             normed = simple_norm(x, stretch=norm, vmin=vmin, vmax=vmax)
+            arr_rescaled = normed(x)
         elif method.lower() == 'counts':
-            normed = simple_norm(x, stretch=norm, vmin=vmin, vmax=vmax)
+            normed = simple_norm(x, stretch=norm, vmin=lower, vmax=upper)
+            arr_rescaled = normed(x)
+        elif method.lower() == 'asinh_sigma':
+            arr_rescaled = asinh_sigma_norm(x, black_sigma=lower, soft_sigma=soft_sigma,
+                                            white_percentile=upper)
         else:
-            raise ValueError("Not a valid method. Try 'percent', 'sigma' or 'counts'.")
-        
-        arr_rescaled = normed(x)
+            raise ValueError("Not a valid method. Try 'percent', 'sigma', 'counts' or 'asinh_sigma'.")
         
         arr_rescaled = np.power(arr_rescaled, gamma)
         
